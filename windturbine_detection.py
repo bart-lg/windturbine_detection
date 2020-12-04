@@ -18,6 +18,8 @@ from sklearn.metrics import confusion_matrix, accuracy_score
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import pandas
 import pycm
+import csv
+from itertools import zip_longest
 
 
 # In[30]:
@@ -25,16 +27,17 @@ import pycm
 
 class WindturbineDetector():
     
-    def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], 
+    def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], s1_crops_path="",
                  categories_windturbine_crops=[3], categories_no_windturbine_crops=[2], 
                  pixel="30p", image_bands=["B02", "B03", "B04", "B08"], rescale_factor=2**14, 
+                 s1_scale_shift=50, s1_rescale_factor=100,
                  rotation_range=10, zoom_range=0.1, width_shift_range=0.1, height_shift_range=0.1,
                  horizontal_flip=False, vertical_flip=False, fill_mode="constant", cval=0.0,
                  num_cnn_layers=2, filters=16, kernel_sizes=[5, 5], layer_activations=["relu", "relu"],
                  input_shape=[30, 30, 4], pool_size=2, strides=2, full_connection_units=128, 
                  full_connection_activation="relu", output_units=1, output_activation="sigmoid",
                  optimizer="adam", loss="binary_crossentropy", metrics=["accuracy"], epochs=10, random_state=0,
-                 test_size=0.2):
+                 test_size=0.2, export_path="", export_name="", csv_confusion_matrix=""):
         
             """
             initialize all parameters for the data preparation
@@ -47,6 +50,8 @@ class WindturbineDetector():
             categories_no_windturbine_crops: list, [1,2]
                 Set one or more categories of selection for random crop selection. 
                 Default is [2]
+            s1_crops_path: str
+                Path for Sentinel-1 crops
             pixel: str, ("10p", "20p", "30p", "40p" or "50p")
                 Set one pixel value for the image.
                 Default is "30p"
@@ -63,8 +68,14 @@ class WindturbineDetector():
             Parameters for data preprocessing
             ----------
             rescale_factor: int, >0
-                Set a rescale factor for the image preprocessing in order to get values between 0 and 1.
+                Set a rescale factor for the image preprocessing of Sentinel-2 crops in order to get values between 0 and 1.
                 Default is 2**14
+            s1_scale_shift: int
+            	Shifts the Sentinel-1 values before rescaling.
+            	Default is 50
+            s1_rescale_factor: int, >0
+            	Set a rescale factor for the image preprocessing of Sentinel-1 crops in order to get values between 0 and 1.
+            	Default is 100
             rotation_range: int, 0 to 180
                 Set a value to randomly rotate images in the range (degrees, 0 to 180)
                 Default is 10
@@ -151,15 +162,27 @@ class WindturbineDetector():
                 Sets the random state for splitting the data in training and test datasets.
             test_size: int, 0 to 1
             	Default is 0.2
+
+            Parameters for export
+            ----------
+			export_path: str
+				Path were the results should be exported to.
+			export_name: str
+				Descriptive name which is used for the confusion matrix csv and the image ids csv.
+			csv_confusion_matrix: str
+
             """
 
             self.categories_windturbine_crops = categories_windturbine_crops
             self.categories_no_windturbine_crops = categories_no_windturbine_crops
+            self.s1_crops_path = Path(s1_crops_path)
             self.pixel = pixel
             self.selection_windturbine_paths = selection_windturbine_paths
             self.selection_no_windturbine_paths = selection_no_windturbine_paths
             self.image_bands = image_bands
             self.rescale_factor = rescale_factor
+            self.s1_scale_shift = s1_scale_shift
+            self.s1_rescale_factor = s1_rescale_factor
             self.rotation_range = rotation_range
             self.zoom_range = zoom_range
             self.width_shift_range = width_shift_range
@@ -185,6 +208,9 @@ class WindturbineDetector():
             self.epochs = epochs
             self.random_state = random_state
             self.test_size = test_size
+            self.export_path = Path(export_path)
+            self.export_name = export_name
+            self.csv_confusion_matrix = csv_confusion_matrix
             
             self.cnn = None
             self.indices = []
@@ -230,6 +256,12 @@ class WindturbineDetector():
         X_images = []
         y_images = []
 
+        s1_subfolder = None
+        if self.s1_crops_path.is_dir():
+        	s1_subfolder_list = list(self.s1_crops_path.glob(f"{self.pixel}*"))
+        	if s1_subfolder_list != None and s1_subfolder_list[0].is_dir():
+        		s1_subfolder = s1_subfolder_list[0]
+
         # loop through every category inside the selected windturbine crop folder
         for category in path.glob("*"):
             # only select categories and pixel shape selected by the user
@@ -238,24 +270,73 @@ class WindturbineDetector():
                     for crop in category.glob("*"):
                         if crop.is_dir() and crop.name != "0_combined-preview":
 
-                            image_path = crop / "sensordata" / "R10m"
                             image_list = np.array([])
 
-                            # append every user selected image band to a list
-                            for element in image_path.glob("*_*_B*_10m.jp2"):
-                                if element.name.split("_")[2] in self.image_bands:
-                                    with rasterio.open(str(element)) as f:
-                                        if image_list.size == 0:
-                                            image_list = f.read(indexes=1)
-                                        else:
-                                            image_list = np.dstack((image_list, f.read(indexes=1)))
+                            for band in self.image_bands:
+
+                                # add Sentinel-2 band
+                                if band in ("B02", "B03", "B04", "B08"):
+
+                                    image_path = crop / "sensordata" / "R10m"
+
+                                    filenames = image_path.glob(f"*_*_{band}_10m.jp2")
+                                    if filenames != None:
+                                        file = filenames[0]
+                                        with rasterio.open(str(file)) as f:
+                                            data = f.read(indexes=1)
+                                            # rescale
+                                            data = data / self.rescale_factor
+                                            if image_list.size == 0:
+                                                image_list = data
+                                            else:
+                                                image_list = np.dstack((image_list, data))                                            
+
+
+                                # add Sentinel-1 band
+                                # VH is band 1, VV is band 2
+                                if s1_subfolder != None and band in ("VH", "VV"):
+
+                                    image_path = self.getCropDirByCoordinates(crop.name.split("_")[1], 
+                                        crop.name.split("_")[2], s1_subfolder)
+
+                                    if image_path != None:
+
+                                    	file = image_path / "sensordata" / "s1_cropped.tif"
+
+                                    	with rasterio.open(str(file)) as f:
+                                    		if band == "VH":
+                                    			data = f.read(indexes=1)
+                                    		if band == "VV":
+                                    			data = f.read(indexes=2)
+                                    		# rescale
+                                    		data = data + self.s1_scale_shift
+                                    		data = data / self.s1_rescale_factor
+                                            if image_list.size == 0:
+                                                image_list = data
+                                            else:
+                                                image_list = np.dstack((image_list, data))                                    		
+
 
                             X_images.append(image_list)
                             y_images.append(windturbines)
                             self.indices.append(crop.name.split("_")[0])
         
         return X_images, y_images 
-    
+
+
+    def getCropDirByCoordinates(self, lat, lon, path):
+
+        result = None
+        
+        folders = list(path.glob(f"*_{lon}_{lat}_*"))
+
+        for folder in folders:
+            if folder.is_dir():
+                result = folder
+                break
+
+        return result
+
     
     def create_wt_identification_data(self):
         """Takes in path lists for windturbine and no windturbine image crops, appends every image to an array
@@ -301,7 +382,7 @@ class WindturbineDetector():
         
     def preprocess_data(self, X, y):
         
-        train_datagen = ImageDataGenerator(rescale = 1./self.rescale_factor,
+        train_datagen = ImageDataGenerator(rescale = None,
                                            rotation_range=self.rotation_range,  # randomly rotate images in the range (degrees, 0 to 180)
                                            zoom_range=self.zoom_range, # Randomly zoom image 
                                            width_shift_range=self.width_shift_range,  # randomly shift images horizontally (fraction of total width)
@@ -416,6 +497,77 @@ class WindturbineDetector():
         self.pycm = pycm.ConfusionMatrix(self.y_test, self.y_pred)
         
         print("\nDone! CNN object available through .cnn")
+
+        # 7. Export results
+        print("\nExport results to csv files:")
+        print("-----------------\n")
+        self.exportResults()
+
+        print("\nDone!")
+
+
+    def exportResults(self):
+
+    	csv_cm_path = self.export_path / self.csv_confusion_matrix
+
+    	# create csv if non-existent
+
+    	if not csv_cm_path.is_file():
+    		with open(str(csv_cm_path), 'w', newline='') as csvfile:
+    			csvwriter = csv.writer(csvfile, delimiter=",", quotechar="'")
+    			csvwriter.writerow([
+    				'ID', 
+    				'name', 
+    				'accuracy', 
+    				'Predict0_Actual0', 
+    				'Predict1_Actual0', 
+    				'Predict0_Actual1', 
+    				'Predict1_Actual1'
+    			])
+    		new_id = 1
+    	else:
+    		# determine new index
+    		with open(str(csv_cm_path), 'r') as csvfile:
+    			data_reversed = list(reversed(list(csv.reader(csvfile))))
+    			new_id = data_reversed[0][0]
+
+		# append confusion matrix and accuracy to csv
+
+    	with open(str(csv_cm_path), 'a', newline='') as csvfile:
+    		csvwriter = csv.writer(csvfile, delimiter=",", quotechar="'")
+    		csvwriter.writerow([
+    			new_id,
+				self.export_name,
+				accuracy_score(self.y_test, self.y_pred),
+				self.cm.TN,
+				self.cm.FP,
+				self.cm.FN,
+				self.cm.TP
+    		])
+
+
+		# write image ids to new csv (in filename use new index)
+
+		# prepare data
+		lists = [self.indices_train, self.y_train, 
+				 self.indices_test, self.y_test, self.y_pred]
+		# create columns and fill empty cells with ''
+		export_data = zip_longest(*lists, fillvalue = '')
+
+		filename = f"{new_id}_{self.export_name}_ids.csv"
+		with open(str(csv_cm_path / filename), 'w', newline='') as csvfile:
+			csvwriter = csv.writer(csvfile, delimiter=",", quotechar="'")
+			csvwriter.writerow([
+				'indices_train',
+				'y_train',
+				'indices_test',
+				'y_test',
+				'y_pred'
+			])
+			csvwriter.writerows(export_data)
+    	
+    	
+    	
 
 
 # In[37]:
