@@ -19,6 +19,8 @@ from tensorflow.keras.preprocessing.image import ImageDataGenerator
 import pandas
 import pycm
 import csv
+from tqdm import tqdm
+import time
 from itertools import zip_longest
 
 
@@ -27,10 +29,10 @@ from itertools import zip_longest
 
 class WindturbineDetector():
     
-    def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], s1_crops_path1="",
-                 s1_crops_path2="", categories_windturbine_crops=[3], categories_no_windturbine_crops=[2], 
-                 pixel="30p", image_bands=["B02", "B03", "B04", "B08"], rescale_factor=2**14, 
-                 s1_scale_shift=50, s1_rescale_factor=100,
+    def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], s1_crops_path1=None,
+                 s1_crops_path2=None, s1_only=False, s1_dim_reduced=False, categories_windturbine_crops=[3], 
+                 categories_no_windturbine_crops=[2], pixel="30p", image_bands=["B02", "B03", "B04", "B08"], 
+                 rescale_factor=2**14, s1_scale_shift=50, s1_rescale_factor=100,
                  rotation_range=10, zoom_range=0.1, width_shift_range=0.1, height_shift_range=0.1,
                  horizontal_flip=False, vertical_flip=False, fill_mode="constant", cval=0.0,
                  num_cnn_layers=2, filters=16, kernel_sizes=[5, 5], layer_activations=["relu", "relu"],
@@ -52,10 +54,22 @@ class WindturbineDetector():
                 Default is [2]
             s1_crops_path: str
                 Path for Sentinel-1 crops
+                Use this if you want to combine Sentinel-1 and Sentinel-2 crops.
+                If you want to use Sentinel-1 images only use the selection_windturbines_paths and selection_no_windturbines_paths
+                and set s1_only to true.
+            s1_only: boolean
+                Set this to true if only Sentinel-1 images should be used.
+                In this case set selection_windturbines_paths and selection_no_windturbines_paths to the Sentinel-1 paths and this flag to True.
+                Default is False
+            s1_dim_reduced: boolean
+                Set this flag to True if the S1 images got reduced in dimensions.
+                The script expects <lon>_<lat> as format for crop directories and the files
+                s1_dim_reduced_VV.tif and/or s1_dim_reduced_VH.tif within the crop directories if this flag is set to True.
+                Default is False 
             pixel: str, ("10p", "20p", "30p", "40p" or "50p")
                 Set one pixel value for the image.
                 Default is "30p"
-            selection_windturbines_path: pathlib.Path, pathlib.Path("")
+            selection_windturbines_paths: pathlib.Path, pathlib.Path("")
                 Set a list of paths to selection_windturbine folders in pathlib.Path format following the folder convention.
                 Default is ""
             selection_no_windturbines_paths: pathlib.Path, pathlib.Path("")
@@ -175,9 +189,12 @@ class WindturbineDetector():
 
             self.categories_windturbine_crops = categories_windturbine_crops
             self.categories_no_windturbine_crops = categories_no_windturbine_crops
-            self.s1_crops_path1 = Path(s1_crops_path1)
-            self.s1_crops_path2 = Path(s1_crops_path2)
+            self.s1_crops_path1 = s1_crops_path1
+            self.s1_crops_path2 = s1_crops_path2
+            self.s1_only = s1_only
+            self.s1_dim_reduced = s1_dim_reduced
             self.pixel = pixel
+            self.pixel_num = int(pixel.replace("p", ""))
             self.selection_windturbine_paths = selection_windturbine_paths
             self.selection_no_windturbine_paths = selection_no_windturbine_paths
             self.image_bands = image_bands
@@ -258,13 +275,13 @@ class WindturbineDetector():
         y_images = []
 
         s1_subfolder1 = None
-        if self.s1_crops_path1.is_dir():
+        if not isinstance(self.s1_crops_path1, type(None)) and self.s1_crops_path1.is_dir():
             s1_subfolder1_list = list(self.s1_crops_path1.glob(f"{self.pixel}*"))
             if s1_subfolder1_list != None and s1_subfolder1_list[0].is_dir():
                 s1_subfolder1 = s1_subfolder1_list[0]
 
         s1_subfolder2 = None
-        if self.s1_crops_path2.is_dir():
+        if not isinstance(self.s1_crops_path1, type(None)) and self.s1_crops_path2.is_dir():
             s1_subfolder2_list = list(self.s1_crops_path2.glob(f"{self.pixel}*"))
             if s1_subfolder2_list != None and s1_subfolder2_list[0].is_dir():
                 s1_subfolder2 = s1_subfolder2_list[0]                
@@ -274,21 +291,23 @@ class WindturbineDetector():
             # only select categories and pixel shape selected by the user
             if category.name.count("_") == 3:
                 if int(category.name.split("_")[1]) in categories and category.name.split("_")[3] == self.pixel:
-                    for crop in category.glob("*"):
-                        if crop.is_dir() and crop.name != "0_combined-preview":
+                    crop_directories = list(category.glob("*"))
+                    for crop in tqdm(crop_directories, desc="Scanning crops"):
+                        if crop.is_dir() and not crop.name.startswith("0_"):
 
                             include = True
-                            if "VV" in self.image_bands or "VH" in self.image_bands:
-                                s1_crop1 = self.getCropDirByCoordinates(crop.name.split("_")[1], 
-                                        crop.name.split("_")[2], s1_subfolder1)
-                                s1_crop2 = self.getCropDirByCoordinates(crop.name.split("_")[1], 
-                                        crop.name.split("_")[2], s1_subfolder2)
-                                if s1_crop1 == None and s1_crop2 == None:
-                                    include = False                                
 
-                            if include == True:
-                                print(f"Including: {crop.name.split('_')[0]}")
-                            else:
+                            if "VV" in self.image_bands or "VH" in self.image_bands:
+
+                                if not self.s1_only:
+                                    s1_crop1 = self.getCropDirByCoordinates(crop.name.split("_")[1], 
+                                            crop.name.split("_")[2], s1_subfolder1)
+                                    s1_crop2 = self.getCropDirByCoordinates(crop.name.split("_")[1], 
+                                            crop.name.split("_")[2], s1_subfolder2)
+                                    if s1_crop1 == None and s1_crop2 == None:
+                                        include = False                                
+
+                            if include != True:
                                 print(f"Not including: {crop.name.split('_')[0]}")
 
                             if include == True:
@@ -301,9 +320,11 @@ class WindturbineDetector():
                                     if band in ("B02", "B03", "B04", "B08"):
 
                                         image_path = crop / "sensordata" / "R10m"
+                                        if not image_path.exists():
+                                            image_path = crop
 
                                         filenames = list(image_path.glob(f"*_*_{band}_10m.jp2"))
-                                        if filenames != None:
+                                        if len(filenames) > 0:
                                             file = filenames[0]
                                             with rasterio.open(str(file)) as f:
                                                 data = f.read(indexes=1)
@@ -312,41 +333,68 @@ class WindturbineDetector():
                                                 if image_list.size == 0:
                                                     image_list = data
                                                 else:
-                                                    image_list = np.dstack((image_list, data))                                            
+                                                    image_list = np.dstack((image_list, data)) 
+                                        else:
+                                            print(f"SENTINEL-2: No files found for crop {crop.name}")                                           
 
 
                                     # add Sentinel-1 band
                                     # VH is band 1, VV is band 2
-                                    if ( s1_subfolder1 != None or s1_subfolder2 != None) and band in ("VH", "VV"):
+                                    if ( self.s1_only or s1_subfolder1 != None or s1_subfolder2 != None) and band in ("VH", "VV"):
 
-                                        image_path = self.getCropDirByCoordinates(crop.name.split("_")[1], 
-                                            crop.name.split("_")[2], s1_subfolder1)
-
-                                        if image_path == None:
+                                        if self.s1_only:
+                                            image_path = crop
+                                        else:
                                             image_path = self.getCropDirByCoordinates(crop.name.split("_")[1], 
-                                            crop.name.split("_")[2], s1_subfolder2)
+                                                crop.name.split("_")[2], s1_subfolder1)
+
+                                            if image_path == None:
+                                                image_path = self.getCropDirByCoordinates(crop.name.split("_")[1], 
+                                                crop.name.split("_")[2], s1_subfolder2)
 
                                         if image_path != None:
 
-                                            file = image_path / "sensordata" / "s1_cropped.tif"
-
-                                            with rasterio.open(str(file)) as f:
+                                            if self.s1_dim_reduced:
                                                 if band == "VH":
-                                                    data = f.read(indexes=1)
+                                                    file = image_path / "s1_dim_reduced_VH.tif"
+                                                    if not file.exists():
+                                                        file = image_path / "s1_shifted_VH.tif"
                                                 if band == "VV":
-                                                    data = f.read(indexes=2)
-                                                # rescale
-                                                data = data + self.s1_scale_shift
-                                                data = data / self.s1_rescale_factor
-                                                if image_list.size == 0:
-                                                    image_list = data
-                                                else:
-                                                    image_list = np.dstack((image_list, data))                                          
+                                                    file = image_path / "s1_dim_reduced_VV.tif"
+                                                    if not file.exists():
+                                                        file = image_path / "s1_shifted_VV.tif"                                                    
+                                            else:
+                                                file = image_path / "sensordata" / "s1_cropped.tif"
 
+                                            if file.exists():
+                                                with rasterio.open(str(file)) as f:
+                                                    if self.s1_dim_reduced:
+                                                        data = f.read(indexes=1)
+                                                    else:
+                                                        if band == "VH":
+                                                            data = f.read(indexes=1)
+                                                        if band == "VV":
+                                                            data = f.read(indexes=2)
+                                                    # rescale
+                                                    data = data + self.s1_scale_shift
+                                                    data = data / self.s1_rescale_factor
+                                                    if image_list.size == 0:
+                                                        image_list = data
+                                                    else:
+                                                        image_list = np.dstack((image_list, data))                                          
+                                            else:
+                                                print(f"ERROR: Could not find s1 image for {crop.name}")
 
-                                X_images.append(image_list)
-                                y_images.append(windturbines)
-                                self.indices.append(crop.name.split("_")[0])
+                                if image_list.shape == (self.pixel_num, self.pixel_num, len(self.image_bands)):
+                                    X_images.append(image_list)
+                                    y_images.append(windturbines)
+                                    self.indices.append(crop.name.split("_")[0])
+                                else:
+                                    print(f"WARNING: Crop omitted due to wrong shape size {crop.name}")
+
+                    print("Done.")
+                    print(f"Image-Array contains {len(X_images)} images.")
+                    print(f"Meta-List contains {len(y_images)} elements [ windturbines:{y_images.count(1)} non-windturbines:{y_images.count(0)} ].")
         
         return X_images, y_images 
 
@@ -355,7 +403,10 @@ class WindturbineDetector():
 
         result = None
         
-        folders = list(path.glob(f"*_{lon}_{lat}_*"))
+        if self.s1_dim_reduced:
+            folders = list(path.glob(f"{lon}_{lat}"))
+        else:
+            folders = list(path.glob(f"*_{lon}_{lat}_*"))
 
         for folder in folders:
             if folder.is_dir():
@@ -391,18 +442,22 @@ class WindturbineDetector():
         y = []
         
         for path in self.selection_windturbine_paths:
+            print("Get images for windturbine paths...")
             X_images, y_images = self.get_images_from_path(windturbines=1, categories=self.categories_windturbine_crops,
                                                            path=path)
             X.extend(X_images)
             y.extend(y_images)
 
         for path in self.selection_no_windturbine_paths:
+            print("Get images for non-windturbine paths...")
             X_images, y_images = self.get_images_from_path(windturbines=0, categories=self.categories_no_windturbine_crops,
                                                            path=path)
             X.extend(X_images)
             y.extend(y_images)
         
         X = np.array(X)
+        print(f"Total shape of X_images: {X.shape}")
+        print(f"Total shape of y_images: {np.array(y).shape}")
     
         return X, y
         
