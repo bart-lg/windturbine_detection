@@ -6,9 +6,6 @@
 # 1. Write doc strings for every function
 # 1. Exception handling and check for invalid inputs.(most important! requirement of kernel_sizes and layer_activatons have to have the same amount of elements as the number of layers (num_cnn_layers)!
 
-# In[29]:
-
-
 import tensorflow as tf
 import numpy as np
 import rasterio
@@ -24,15 +21,18 @@ import time
 from itertools import zip_longest
 
 
-# In[30]:
-
+def reduce_coordinate_digits(lon, lat):
+    coordinateDecimalsForComparison = 4
+    lon = lon[ : ( lon.find(".") + coordinateDecimalsForComparison + 1 ) ]
+    lat = lat[ : ( lat.find(".") + coordinateDecimalsForComparison + 1 ) ]
+    return lon, lat
 
 class WindturbineDetector():
     
     def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], s1_crops_path1=None,
                  s1_crops_path2=None, s1_only=False, s1_dim_reduced=False, categories_windturbine_crops=[3], 
                  categories_no_windturbine_crops=[2], pixel="30p", image_bands=["B02", "B03", "B04", "B08"], 
-                 rescale_factor=2**14, s1_scale_shift=50, s1_rescale_factor=100,
+                 coordinate_filter_csv=None, rescale_factor=2**14, s1_scale_shift=50, s1_rescale_factor=100,
                  rotation_range=10, zoom_range=0.1, width_shift_range=0.1, height_shift_range=0.1,
                  horizontal_flip=False, vertical_flip=False, fill_mode="constant", cval=0.0,
                  num_cnn_layers=2, filters=16, kernel_sizes=[5, 5], layer_activations=["relu", "relu"],
@@ -78,6 +78,11 @@ class WindturbineDetector():
             image_bands: list, ["B02", "B03", "B04", "B08"]
                 Set the preferred image bands for the image.
                 Default is ["B02", "B03", "B04", "B08"]
+            coordinate_filter_csv: str
+                Path to csv file containing coordinates in lat/lon format with "lat" and "lon" headers.
+                Only coordinates contained in csv are used for training and testing.
+                For the comparison of the coordinates the coordinate values are reduced to a precision of 4 digits after comma.
+                Default is None
             
             Parameters for data preprocessing
             ----------
@@ -198,6 +203,10 @@ class WindturbineDetector():
             self.selection_windturbine_paths = selection_windturbine_paths
             self.selection_no_windturbine_paths = selection_no_windturbine_paths
             self.image_bands = image_bands
+            if isinstance(coordinate_filter_csv, type(None)):
+                self.coordinate_filter_csv = None
+            else:
+                self.coordinate_filter_csv = Path(coordinate_filter_csv)
             self.rescale_factor = rescale_factor
             self.s1_scale_shift = s1_scale_shift
             self.s1_rescale_factor = s1_rescale_factor
@@ -284,7 +293,13 @@ class WindturbineDetector():
         if not isinstance(self.s1_crops_path1, type(None)) and self.s1_crops_path2.is_dir():
             s1_subfolder2_list = list(self.s1_crops_path2.glob(f"{self.pixel}*"))
             if s1_subfolder2_list != None and s1_subfolder2_list[0].is_dir():
-                s1_subfolder2 = s1_subfolder2_list[0]                
+                s1_subfolder2 = s1_subfolder2_list[0]    
+
+        coordinates = None
+        if not isinstance(self.coordinate_filter_csv, type(None)):
+            if self.coordinate_filter_csv.exists():
+                col_list = ["lon", "lat"]
+                coordinates = pandas.read_csv(self.coordinate_filter_csv.absolute(), usecols=col_list, dtype=str)
 
         # loop through every category inside the selected windturbine crop folder
         for category in path.glob("*"):
@@ -295,9 +310,28 @@ class WindturbineDetector():
                     for crop in tqdm(crop_directories, desc="Scanning crops"):
                         if crop.is_dir() and not crop.name.startswith("0_"):
 
-                            include = True
+                            if isinstance(coordinates, pandas.core.frame.DataFrame) and len(coordinates) > 0:
+                                include = False
+                                crop_components = crop.name.split("_")
+                                if len(crop_components) > 2:
+                                    crop_lon = str(crop_components[1])
+                                    crop_lat = str(crop_components[2])
+                                else:
+                                    crop_lon = str(crop_components[0])
+                                    crop_lat = str(crop_components[1])
+                                crop_lon, crop_lat = reduce_coordinate_digits(crop_lon, crop_lat)
+                                for i in range(len(coordinates)):
+                                    lon = str(coordinates["lon"][i])
+                                    lat = str(coordinates["lat"][i]) 
+                                    lon, lat = reduce_coordinate_digits(lon, lat)
+                                    if ( lon in crop_lon or crop_lon in lon ) and ( lat in crop_lat or crop_lat in lat ):
+                                        include = True
+                                        break
+                            else:
+                                include = True
 
-                            if "VV" in self.image_bands or "VH" in self.image_bands:
+
+                            if include == True and ( "VV" in self.image_bands or "VH" in self.image_bands ):
 
                                 if not self.s1_only:
                                     s1_crop1 = self.getCropDirByCoordinates(crop.name.split("_")[1], 
@@ -652,9 +686,6 @@ class WindturbineDetector():
         
 
 
-# In[37]:
-
-
 #test = WindturbineDetector(selection_windturbine_paths=[Path("/data/projects/windturbine-identification-sentinel/croppedTiles/us-uswtdb_selection_windturbines")], 
 #                             selection_no_windturbine_paths=[Path("/data/projects/windturbine-identification-sentinel/croppedTiles/selection_no-windturbines")], 
 #                             pixel="50p", rotation_range=0, zoom_range=0, width_shift_range=0, height_shift_range=0,
@@ -662,21 +693,12 @@ class WindturbineDetector():
 #                             input_shape=[50, 50, 4], random_state=0)
 
 
-# In[38]:
-
-
 #test.detect_windturbines_with_CNN()
-
-
-# In[39]:
 
 
 #print(test.confusion_matrix)
 #test.pycm.print_matrix()
 #accuracy_score(test.y_test, test.y_pred)
-
-
-# In[ ]:
 
 
 ## Predict if a windturbine is on a located on a specific image
