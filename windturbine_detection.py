@@ -32,7 +32,8 @@ class WindturbineDetector():
     def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], s1_crops_path1=None,
                  s1_crops_path2=None, s1_only=False, s1_dim_reduced=False, categories_windturbine_crops=[3], 
                  categories_no_windturbine_crops=[2], pixel="30p", image_bands=["B02", "B03", "B04", "B08"], 
-                 coordinate_filter_csv=None, rescale_factor=2**14, s1_scale_shift=50, s1_rescale_factor=100,
+                 coordinate_filter_csv=None, no_windturbine_limit=None,
+                 rescale_factor=2**14, s1_scale_shift=50, s1_rescale_factor=100,
                  rotation_range=10, zoom_range=0.1, width_shift_range=0.1, height_shift_range=0.1,
                  horizontal_flip=False, vertical_flip=False, fill_mode="constant", cval=0.0,
                  num_cnn_layers=2, filters=16, kernel_sizes=[5, 5], layer_activations=["relu", "relu"],
@@ -83,6 +84,9 @@ class WindturbineDetector():
                 Only coordinates contained in csv are used for training and testing.
                 For the comparison of the coordinates the coordinate values are reduced to a precision of 4 digits after comma.
                 Default is None
+            no_windturbine_limit: int
+            	Limits the number of used non-windturbine images.
+            	Default is None (use all images)
             
             Parameters for data preprocessing
             ----------
@@ -207,6 +211,7 @@ class WindturbineDetector():
                 self.coordinate_filter_csv = None
             else:
                 self.coordinate_filter_csv = Path(coordinate_filter_csv)
+            self.no_windturbine_limit = no_windturbine_limit
             self.rescale_factor = rescale_factor
             self.s1_scale_shift = s1_scale_shift
             self.s1_rescale_factor = s1_rescale_factor
@@ -312,7 +317,8 @@ class WindturbineDetector():
                     for crop in tqdm(crop_directories, desc="Scanning crops"):
                         if crop.is_dir() and not crop.name.startswith("0_"):
 
-                            if isinstance(coordinates, pandas.core.frame.DataFrame) and len(coordinates) > 0:
+                            # check coordinates (windturbines only)
+                            if windturbines == 1 and isinstance(coordinates, pandas.core.frame.DataFrame) and len(coordinates) > 0:
                                 include = False
                                 crop_components = crop.name.split("_")
                                 if len(crop_components) > 2:
@@ -332,6 +338,10 @@ class WindturbineDetector():
                             else:
                                 include = True
 
+                        	# limit non-windturbine images
+                        	if windturbines == 0 and not isinstance(self.no_windturbine_limit, type(None)) and \
+                        	   len(X_images) > self.no_windturbine_limit:
+                        		include = False
 
                             if include == True and ( "VV" in self.image_bands or "VH" in self.image_bands ):
 
@@ -343,8 +353,8 @@ class WindturbineDetector():
                                     if s1_crop1 == None and s1_crop2 == None:
                                         include = False                                
 
-                            if include != True:
-                                print(f"Not including: {crop.name.split('_')[0]}")
+                            # if include != True:
+                                # print(f"Not including: {crop.name.split('_')[0]}")
 
                             if include == True:
 
