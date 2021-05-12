@@ -85,8 +85,8 @@ class WindturbineDetector():
                 For the comparison of the coordinates the coordinate values are reduced to a precision of 4 digits after comma.
                 Default is None
             no_windturbine_limit: int
-            	Limits the number of used non-windturbine images.
-            	Default is None (use all images)
+                Limits the number of used non-windturbine images.
+                Default is None (use all images)
             
             Parameters for data preprocessing
             ----------
@@ -338,10 +338,10 @@ class WindturbineDetector():
                             else:
                                 include = True
 
-                        	# limit non-windturbine images
-                        	if windturbines == 0 and not isinstance(self.no_windturbine_limit, type(None)) and \
-                        	   len(X_images) > self.no_windturbine_limit:
-                        		include = False
+                            # limit non-windturbine images
+                            if windturbines == 0 and not isinstance(self.no_windturbine_limit, type(None)) and \
+                               len(X_images) > self.no_windturbine_limit:
+                                include = False
 
                             if include == True and ( "VV" in self.image_bands or "VH" in self.image_bands ):
 
