@@ -9,6 +9,8 @@ from windturbine_detection_S2only import WindturbineDetector
 from pathlib import Path
 from sklearn.metrics import confusion_matrix, accuracy_score 
 
+# Sentinel-2 shifted 50% 50x50px
+
 runs = 1
 
 for i in range(0, runs):
