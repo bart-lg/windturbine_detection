@@ -513,13 +513,40 @@ class WindturbineDetector():
         pass
 
 
-    def import_data(self):
+    def import_data(self, file_path=None):
         print("\nImporting data:")
         print("-----------------\n")
-        if isinstance(self.X, type(None)) and isinstance(self.y, type(None)):
-            self.X, self.y = self.create_wt_identification_data()
+
+        if isinstance(file_path, type(None)):
+
+            if isinstance(self.X, type(None)) and isinstance(self.y, type(None)):
+                self.X, self.y = self.create_wt_identification_data()
+            else:
+                print("Data already loaded!\n")     
+
         else:
-            print("Data already loaded!\n")            
+
+            file = Path(file_path)
+
+            if file.exists():
+                npzfile = np.load(file.absolute())
+                self.X = npzfile['X']
+                self.y = npzfile['y']
+                print("Data successfully loaded from file.")
+            else:
+                print("Import file could not be found!")
+
+
+    def export_data(self, file_path):
+        print("\nExporting data:")
+        print("-----------------\n")        
+
+        file = Path(file_path)
+        if not file.exists():
+            np.savez(file.absolute(), X=self.X, y=self.y)
+            print("Data saved to file.")
+        else:
+            print("Export file already exists! Export aborted.")                
     
     
     def detect_windturbines_with_CNN(self):
