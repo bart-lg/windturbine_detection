@@ -229,6 +229,8 @@ class WindturbineDetector():
             self.indices = []
             self.indices_train = []
             self.indices_test = []
+            self.X = None
+            self.y = None            
             self.X_train = None
             self.X_test = None
             self.y_train = None
@@ -509,26 +511,36 @@ class WindturbineDetector():
     
     def predict_single_observation(self):
         pass
+
+
+    def import_data(self):
+        print("\nImporting data:")
+        print("-----------------\n")
+        if isinstance(self.X, type(None)) and isinstance(self.y, type(None)):
+            self.X, self.y = self.create_wt_identification_data()
+        else:
+            print("Data already loaded!\n")            
     
     
     def detect_windturbines_with_CNN(self):
 
+        if not isinstance(random_state, type(None)):
+            self.random_state = random_state
+
         # 1. Import the data:
-        print("\nImporting data:")
-        print("-----------------\n")
-        X, y = self.create_wt_identification_data()
+        self.import_data()
 
         # 2. Split data into training and test data:
         print("\nSplitting data:")
         print("-----------------\n")
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = self.test_size, random_state = self.random_state)
+        X_train, X_test, y_train, y_test = train_test_split(self.X, self.y, test_size = self.test_size, random_state = self.random_state)
         self.X_train = X_train
         self.X_test = X_test
         self.y_train = y_train
         self.y_test = y_test
 
         # 2.1. Randomize and split the indices with the same random_state in order to keep the indices of the crops
-        X_train, X_test, indices_train, indices_test = train_test_split(X, self.indices, test_size = self.test_size, random_state = self.random_state)
+        X_train, X_test, indices_train, indices_test = train_test_split(self.X, self.indices, test_size = self.test_size, random_state = self.random_state)
         self.indices_train = indices_train
         self.indices_test = indices_test
 
