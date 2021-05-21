@@ -23,12 +23,18 @@ from tqdm import tqdm
 
 # In[30]:
 
+def reduce_coordinate_digits(lon, lat):
+    coordinateDecimalsForComparison = 4
+    lon = lon[ : ( lon.find(".") + coordinateDecimalsForComparison + 1 ) ]
+    lat = lat[ : ( lat.find(".") + coordinateDecimalsForComparison + 1 ) ]
+    return lon, lat
 
 class WindturbineDetector():
     
     def __init__(self, selection_windturbine_paths=[""], selection_no_windturbine_paths=[""], 
                  categories_windturbine_crops=[1], categories_no_windturbine_crops=[1], 
-                 pixel="30p", image_bands=["VV", "VH"], value_increment=5, rescale_factor=20, 
+                 pixel="30p", image_bands=["VV", "VH"], coordinate_filter_csv=None, 
+                 no_windturbine_limit=None, value_increment=5, rescale_factor=20, 
                  rotation_range=0, zoom_range=0, width_shift_range=0, height_shift_range=0,
                  horizontal_flip=False, vertical_flip=False, fill_mode="constant", cval=0.0,
                  num_cnn_layers=2, filters=16, kernel_sizes=[5, 5], layer_activations=["relu", "relu"],
@@ -60,6 +66,14 @@ class WindturbineDetector():
             image_bands: list, ["VV", "VH"]
                 Set the preferred image bands for the image.
                 Default is ["VV", "VH"]
+            coordinate_filter_csv: str
+                Path to csv file containing coordinates in lat/lon format with "lat" and "lon" headers.
+                Only coordinates contained in csv are used for training and testing.
+                For the comparison of the coordinates the coordinate values are reduced to a precision of 4 digits after comma.
+                Default is None
+            no_windturbine_limit: int
+                Limits the number of used non-windturbine images.
+                Default is None (use all images)                
             
             Parameters for data preprocessing
             ----------
@@ -98,6 +112,7 @@ class WindturbineDetector():
             cval: Float or Int 
                 Value used for points outside the boundaries when fill_mode = "constant".
                 Default is 0.0
+
             
             Parameters for building the convolutional neural network CNN
             ----------
@@ -165,6 +180,11 @@ class WindturbineDetector():
             self.selection_windturbine_paths = selection_windturbine_paths
             self.selection_no_windturbine_paths = selection_no_windturbine_paths
             self.image_bands = image_bands
+            if isinstance(coordinate_filter_csv, type(None)):
+                self.coordinate_filter_csv = None
+            else:
+                self.coordinate_filter_csv = Path(coordinate_filter_csv)
+            self.no_windturbine_limit = no_windturbine_limit            
             self.value_increment = value_increment
             self.rescale_factor = rescale_factor
             self.rotation_range = rotation_range
@@ -237,6 +257,12 @@ class WindturbineDetector():
         X_images = []
         y_images = []
 
+        coordinates = None
+        if not isinstance(self.coordinate_filter_csv, type(None)):
+            if self.coordinate_filter_csv.exists():
+                col_list = ["lon", "lat"]
+                coordinates = pandas.read_csv(self.coordinate_filter_csv.absolute(), usecols=col_list, dtype=str)
+
         # loop through every category inside the selected windturbine crop folder
         for category in path.glob("*"):
             # only select categories and pixel shape selected by the user
@@ -245,6 +271,28 @@ class WindturbineDetector():
                     crop_directories = list(category.glob("*"))
                     for crop in tqdm(crop_directories, desc=f"Scanning crops [{category.name}]:"):
                         if crop.is_dir() and crop.name != "0_combined-preview":
+
+                            # check coordinates (windturbines only)
+                            if windturbines == 1 and isinstance(coordinates, pandas.core.frame.DataFrame) and len(coordinates) > 0:
+                                include = False
+                                crop_components = crop.name.split("_")
+                                crop_lon = str(crop_components[0])
+                                crop_lat = str(crop_components[1])
+                                crop_lon, crop_lat = reduce_coordinate_digits(crop_lon, crop_lat)
+                                for i in range(len(coordinates)):
+                                    lon = str(coordinates["lon"][i])
+                                    lat = str(coordinates["lat"][i]) 
+                                    lon, lat = reduce_coordinate_digits(lon, lat)
+                                    if ( lon in crop_lon or crop_lon in lon ) and ( lat in crop_lat or crop_lat in lat ):
+                                        include = True
+                                        break
+                                if include == False:
+                                    continue
+
+                            # limit non-windturbine images
+                            if windturbines == 0 and not isinstance(self.no_windturbine_limit, type(None)) and \
+                               len(X_images) > self.no_windturbine_limit:
+                                break                                    
 
                             image_path = crop 
                                                         
@@ -269,7 +317,7 @@ class WindturbineDetector():
                             if image_list.shape == (self.pixel_num, self.pixel_num, len(self.image_bands)):
                                 X_images.append(image_list)
                                 y_images.append(windturbines)
-                                self.indices.append(crop.name.split("_")[0])
+                                self.indices.append(crop.name)
                             else:
                                 print(f"WARNING: Crop omitted due to wrong shape size {crop.name}")
 
